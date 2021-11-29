@@ -25,27 +25,29 @@ use yii\httpclient\Client;
 class SberbankPaysystemHandler extends PaysystemHandler
 {
     /**
-     * @var
+     * @see https://developer.sberbank.ru/acquiring-api-rest-requests1pay
      */
-    public $terminal_key;
+    const ORDER_STATUS_2 = 2; //Проведена полная авторизация суммы заказа
 
-    /**
-     * @var bool Отправлять данные по чекам?
-     */
-    public $is_receipt = false;
 
-    /**
-     * @var string
-     */
-    public $tinkoff_url = "https://securepay.tinkoff.ru/v2/";
+    public $isLive = true; //https://auth.robokassa.ru/Merchant/Index.aspx
 
+    public $gatewayUrl = 'https://securepayments.sberbank.ru/payment/rest/';
+    public $gatewayTestUrl = 'https://3dsec.sberbank.ru/payment/rest/';
+    public $thanksUrl = '/main/spasibo-za-zakaz';
+    public $failUrl = '/main/problema-s-oplatoy';
+    public $currency = 'RUB';
+    public $username = '';
+    public $password = '';
+    
     /**
+     * Можно задать название и описание компонента
      * @return array
      */
     static public function descriptorConfig()
     {
         return array_merge(parent::descriptorConfig(), [
-            'name' => "Tinkoff",
+            'name' => \Yii::t('skeeks/shop/app', 'Sberbank'),
         ]);
     }
 
@@ -53,29 +55,28 @@ class SberbankPaysystemHandler extends PaysystemHandler
     public function rules()
     {
         return ArrayHelper::merge(parent::rules(), [
-            [['terminal_key'], 'required'],
-            [['terminal_key'], 'string'],
-            [['is_receipt'], 'boolean'],
+            [['isLive'], 'boolean'],
+            [['username'], 'string'],
+            [['password'], 'string'],
         ]);
     }
 
     public function attributeLabels()
     {
         return ArrayHelper::merge(parent::attributeLabels(), [
-            'terminal_key' => "ID терминала",
-            'is_receipt'   => "Отправлять данные для формирования чеков?",
+            'username' => 'Идентификатор магазина из ЛК',
+            'password' => 'Пароль',
+            'isLive'   => 'Рабочий режим (не тестовый!)',
         ]);
     }
 
     public function attributeHints()
     {
         return ArrayHelper::merge(parent::attributeHints(), [
-            'terminal_key' => "Указан в личном кабинете tinkiff",
-            'is_receipt'   => "Необходимо передавать, если вы отправляете данные для формирования чеков по одному из сценариев: Платеж и чек одновременно или Сначала чек, потом платеж.",
+            'isLive' => 'Будет использован url: https://securepayments.sberbank.ru/payment/rest/ (тестовый: https://3dsec.sberbank.ru/payment/rest/)',
         ]);
     }
-
-
+    
     /**
      * @return array
      */
@@ -86,9 +87,10 @@ class SberbankPaysystemHandler extends PaysystemHandler
                 'class'  => FieldSet::class,
                 'name'   => 'Основные',
                 'fields' => [
-                    'terminal_key',
+                    'username',
+                    'password',
 
-                    'is_receipt' => [
+                    'isLive' => [
                         'class'     => BoolField::class,
                         'allowNull' => false,
                     ],
@@ -97,7 +99,28 @@ class SberbankPaysystemHandler extends PaysystemHandler
 
         ];
     }
-
+    
+    /**
+     * @param $method
+     * @param $data
+     * @return mixed
+     */
+    public function gateway($method, $data)
+    {
+        $curl = curl_init(); // Инициализируем запрос
+        curl_setopt_array($curl, [
+            CURLOPT_URL            => ($this->isLive ? $this->gatewayUrl : $this->gatewayTestUrl).$method, // Полный адрес метода
+            CURLOPT_RETURNTRANSFER => true, // Возвращать ответ
+            CURLOPT_POST           => true, // Метод POST
+            CURLOPT_POSTFIELDS     => http_build_query($data) // Данные в запросе
+        ]);
+        $response = curl_exec($curl); // Выполненяем запрос
+        $response = json_decode($response, true); // Декодируем из JSON в массив
+        curl_close($curl); // Закрываем соединение
+        return $response; // Возвращаем ответ
+    }
+    
+    
     /**
      * @param ShopPayment $shopPayment
      * @return \yii\console\Response|\yii\web\Response
