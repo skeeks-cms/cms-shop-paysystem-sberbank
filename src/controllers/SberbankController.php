@@ -51,24 +51,19 @@ class SberbankController extends Controller
 
     public function actionFail()
     {
-        \Yii::warning("Tinkoff fail: " . print_r(\Yii::$app->request->get(), true), static::class);
+        \Yii::warning("Sberbank fail: ".print_r(\Yii::$app->request->get(), true), self::class);
 
-        /**
-         * @var $bill ShopBill
-         */
-        if (!$orderId = \Yii::$app->request->get('OrderId')) {
+        if (!$code = \Yii::$app->request->get('code')) {
             throw new Exception('Bill not found');
         }
 
-        if (!$bill = ShopBill::find()->where(['id' => $orderId])->one()) {
+        if (!$bill = ShopBill::find()->where(['code' => $code])->one()) {
             throw new Exception('Bill not found');
         }
-
-        print_r(\Yii::$app->request->get());
-        die;
 
         return $this->redirect($shopOrder->getPublicUrl(\Yii::$app->request->get()));
     }
+
 
     public function actionNotify()
     {
