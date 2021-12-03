@@ -16,6 +16,7 @@ use skeeks\yii2\form\fields\BoolField;
 use skeeks\yii2\form\fields\FieldSet;
 use yii\base\Exception;
 use yii\helpers\ArrayHelper;
+use yii\helpers\Json;
 use yii\helpers\Url;
 use yii\httpclient\Client;
 
@@ -127,10 +128,10 @@ class SberbankPaysystemHandler extends PaysystemHandler
      */
     public function actionPayOrder(ShopOrder $shopOrder)
     {
-        $model = $this->getShopBill($shopOrder);
+        $bill = $this->getShopBill($shopOrder);
 
-        $yooKassa = $model->shopPaySystem->handler;
-        $money = $model->money->convertToCurrency("RUB");
+        $sber = $bill->shopPaySystem->handler;
+        $money = $bill->money->convertToCurrency("RUB");
         $returnUrl = $shopOrder->getUrl([], true);
         $successUrl = $shopOrder->getUrl(['success_paied' => true], true);
         $failUrl = $shopOrder->getUrl(['fail_paied' => true], true);
@@ -142,135 +143,38 @@ class SberbankPaysystemHandler extends PaysystemHandler
         $shopBuyer = $shopOrder->shopBuyer;
 
 
+        if (isset($bill->external_data['formUrl'])) {
+            return \Yii::$app->response->redirect($bill->external_data['formUrl']);
+        }
+
         $data = [
-            'TerminalKey'     => $this->terminal_key,
-            'Amount'          => $money->amount * 100,
-            'OrderId'         => $model->id,
-            'Description'     => $model->description,
-            'NotificationURL' => Url::to(['/tinkoff/tinkoff/notify'], true),
-            'SuccessURL'      => $successUrl,
-            'FailURL'         => $failUrl,
+            'userName'    => $bill->shopPaySystem->handler->username,
+            'password'    => $bill->shopPaySystem->handler->password,
+            'description' => "Заказ в магазине №{$bill->shopOrder->id}",
+            'orderNumber' => urlencode($bill->id),
+            'amount'      => urlencode($bill->money->amount * 100), // передача данных в копейках/центах
+            'returnUrl'   => Url::toRoute(['/sberbank/sberbank/success', 'code' => urlencode($bill->code)], true),
+            'failUrl'     => Url::toRoute(['/sberbank/sberbank/fail', 'code' => urlencode($bill->code)], true),
         ];
 
-
-        $receipt = [];
-        if ($yooKassa->is_receipt) {
-
-            $receipt['Email'] = \Yii::$app->cms->adminEmail;
-            if (trim($shopBuyer->email)) {
-                $receipt['Email'] = trim($shopBuyer->email);
-            }
-            $receipt['Taxation'] = "usn_income"; //todo: вынести в настройки
-
-            foreach ($shopOrder->shopOrderItems as $shopOrderItem) {
-                $itemData = [];
-
-                /**
-                 * @see https://www.tinkoff.ru/kassa/develop/api/payments/init-request/#Items
-                 */
-                $itemData['Name'] = StringHelper::substr($shopOrderItem->name, 0, 128);
-                $itemData['Quantity'] = (float)$shopOrderItem->quantity;
-                $itemData['Tax'] = "none"; //todo: доработать этот момент
-                $itemData['Price'] = $shopOrderItem->money->amount * 100;
-                $itemData['Amount'] = $shopOrderItem->money->amount * $shopOrderItem->quantity * 100;
-
-                $receipt['Items'][] = $itemData;
-            }
-
-            /**
-             * Стоимость доставки так же нужно добавить
-             */
-            if ((float)$shopOrder->moneyDelivery->amount > 0) {
-                $itemData = [];
-                $itemData['Name'] = StringHelper::substr($shopOrder->shopDelivery->name, 0, 128);
-                $itemData['Quantity'] = 1;
-                $itemData['Tax'] = "none";
-                $itemData['Amount'] = $shopOrder->moneyDelivery->amount * 100;
-                $itemData['Price'] = $shopOrder->moneyDelivery->amount * 100;
-
-                $receipt['Items'][] = $itemData;
-            }
-
-            $totalCalcAmount = 0;
-            foreach ($receipt['Items'] as $itemData) {
-                $totalCalcAmount = $totalCalcAmount + ($itemData['Amount'] * $itemData['Quantity']);
-            }
-
-            $discount = 0;
-            if ($totalCalcAmount > (float)$money->amount) {
-                $discount = abs((float)$money->amount - $totalCalcAmount);
-            }
-
-            /**
-             * Стоимость скидки
-             */
-            //todo: тут можно еще подумать, это временное решение
-            if ($discount > 0 && 1 == 2) {
-                $discountValue = $discount;
-                foreach ($receipt['items'] as $key => $item) {
-                    if ($discountValue == 0) {
-                        break;
-                    }
-                    if ($item['amount']['value']) {
-                        if ($item['amount']['value'] >= $discountValue) {
-                            $item['amount']['value'] = $item['amount']['value'] - $discountValue;
-                            $discountValue = 0;
-                        } else {
-                            $item['amount']['value'] = 0;
-                            $discountValue = $discountValue - $item['amount']['value'];
-                        }
-                    }
-
-                    $receipt['items'][$key] = $item;
-                }
-                //$receipt['items'][] = $itemData;
-
-
-            }
-
-
-            $data["Receipt"] = $receipt;
+        if ($bill->shopBuyer->email) {
+            $data['jsonParams'] = '{"email":"'.$bill->shopBuyer->email.'"}';
         }
 
+        $response = $this->gateway('register.do', $data);
 
+        if (isset($response['errorCode'])) { // В случае ошибки вывести ее
+            return \Yii::$app->response->redirect(Url::toRoute(['/sberbank/sberbank/fail', 'code' => urlencode($bill->code), 'response' => Json::encode($response)], true));
+        } else { // В случае успеха перенаправить пользователя на плетжную форму
+            $bill->external_data = $response;
+            if (!$bill->save()) {
 
-        $email = null;
-        $phone = null;
-        if ($model->shopBuyer) {
-            if ($model->shopBuyer->email) {
-                $data["DATA"]["Email"] = $model->shopBuyer->email;
+                //TODO: Add logs
+                print_r($bill->errors);
+                die;
             }
+
+            return \Yii::$app->response->redirect($bill->external_data['formUrl']);
         }
-
-        //print_r($data);die;
-
-        $client = new Client();
-        $request = $client
-            ->post($this->tinkoff_url."Init")
-            ->setFormat(Client::FORMAT_JSON)
-            ->setData($data);
-        ;
-
-        \Yii::info(print_r($data, true), self::class);
-
-        $response = $request->send();
-        if (!$response->isOk) {
-            \Yii::error($response->content, self::class);
-            throw new Exception('Tinkoff api not found');
-        }
-
-        if (!ArrayHelper::getValue($response->data, "PaymentId")) {
-            \Yii::error(print_r($response->data, true), self::class);
-            throw new Exception('Tinkoff kassa payment id not found: ' . print_r($response->data, true));
-        }
-
-        $model->external_id = ArrayHelper::getValue($response->data, "PaymentId");
-        $model->external_data = $response->data;
-
-        if (!$model->save()) {
-            throw new Exception("Не удалось сохранить платеж: ".print_r($model->errors, true));
-        }
-
-        return \Yii::$app->response->redirect(ArrayHelper::getValue($response->data, "PaymentURL"));
     }
 }

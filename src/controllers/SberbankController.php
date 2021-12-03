@@ -10,9 +10,11 @@ namespace skeeks\cms\shop\sberbank\controllers;
 
 use skeeks\cms\shop\models\ShopBill;
 use skeeks\cms\shop\models\ShopPayment;
+use skeeks\cms\shop\sberbank\SberbankPaysystemHandler;
 use yii\base\Exception;
 use yii\helpers\ArrayHelper;
 use yii\helpers\Json;
+use yii\helpers\Url;
 use yii\web\Controller;
 use YooKassa\Client;
 
@@ -31,28 +33,11 @@ class SberbankController extends Controller
 
     public function actionSuccess()
     {
-        \Yii::info("Tinkoff success: " . print_r(\Yii::$app->request->get(), true), static::class);
+        \Yii::info("Sberbank success: " . print_r(\Yii::$app->request->get(), true), static::class);
 
         /**
          * @var $bill ShopBill
          */
-        if (!$orderId = \Yii::$app->request->get('OrderId')) {
-            throw new Exception('Bill not found');
-        }
-
-        if (!$bill = ShopBill::find()->where(['id' => $orderId])->one()) {
-            throw new Exception('Bill not found');
-        }
-
-        return $this->redirect($bill->shopOrder->getUrl(\Yii::$app->request->get()));
-    }
-
-
-
-    public function actionFail()
-    {
-        \Yii::warning("Sberbank fail: ".print_r(\Yii::$app->request->get(), true), self::class);
-
         if (!$code = \Yii::$app->request->get('code')) {
             throw new Exception('Bill not found');
         }
@@ -61,109 +46,81 @@ class SberbankController extends Controller
             throw new Exception('Bill not found');
         }
 
-        return $this->redirect($shopOrder->getPublicUrl(\Yii::$app->request->get()));
+
+        $data = [
+            'userName'    => $bill->shopPaySystem->handler->username,
+            'password'    => $bill->shopPaySystem->handler->password,
+            'orderNumber' => urlencode($bill->id),
+        ];
+
+        $response = $bill->shopPaySystem->handler->gateway('getOrderStatusExtended.do', $data);
+
+        /**
+         * Оплата произведена
+         */
+        if (ArrayHelper::getValue($response, 'orderStatus') == SberbankPaysystemHandler::ORDER_STATUS_2 && ArrayHelper::getValue($response, 'orderNumber') == $bill->id) {
+
+            $transaction = \Yii::$app->db->beginTransaction();
+
+            try {
+
+                $payment = new ShopPayment();
+                $payment->shop_buyer_id = $bill->shop_buyer_id;
+                $payment->shop_pay_system_id = $bill->shop_pay_system_id;
+                $payment->shop_order_id = $bill->shop_order_id;
+                $payment->amount = $bill->amount;
+                $payment->currency_code = $bill->currency_code;
+                $payment->comment = "Оплата по счету №{$bill->id} от ".\Yii::$app->formatter->asDate($bill->created_at);
+                $payment->external_data = $response;
+
+                if (!$payment->save()) {
+                    throw new Exception("Не сохранился платеж: ".print_r($payment->errors, true));
+                }
+
+                $bill->isNotifyUpdate = false;
+                $bill->paid_at = time();
+                $bill->shop_payment_id = $payment->id;
+
+                if (!$bill->save()) {
+                    throw new Exception("Не обновился счет: ".print_r($payment->errors, true));
+                }
+
+                $bill->shopOrder->paid_at = time();
+                $bill->shopOrder->save();
+
+                $transaction->commit();
+
+                return $this->redirect($bill->shopOrder->url);
+
+            } catch (\Exception $e) {
+                $transaction->rollBack();
+                \Yii::error($e->getMessage(), self::class);
+                throw $e;
+            }
+
+        }
+
+        return $this->redirect(Url::toRoute(['/sberbank/sberbank/fail', 'code' => $code, 'response' => Json::encode($response)], true));
     }
 
 
-    public function actionNotify()
+
+    public function actionFail()
     {
-        \Yii::info("actionNotify", static::class);
+        \Yii::warning("Sberbank fail: ".print_r(\Yii::$app->request->get(), true), self::class);
 
-        $json = file_get_contents('php://input');
-        \Yii::info("JSON: ".$json, static::class);
-
-        try {
-
-            if (!$json) {
-                throw new Exception('От банка не пришли данные json.');
-            }
-
-            $data = Json::decode($json);
-
-            if (!isset($data['OrderId']) && !$data['OrderId']) {
-                throw new Exception('Некорректны запрос от банка нет order id.');
-            }
-
-            /**
-             * @var $shopBill ShopBill
-             */
-            if (!$shopBill = ShopBill::findOne($data['OrderId'])) {
-                throw new Exception('Заказ не найден в базе.');
-            }
-
-            if ($shopBill->id != $data['OrderId']) {
-                throw new Exception('Не совпадает номер заказа.');
-            }
-
-            $amount = $shopBill->money->amount * $shopBill->money->currency->subUnit;
-            if ($amount != $data['Amount']) {
-                throw new Exception('Не совпадает сумма заказа.');
-            }
-
-            if ($data['Status'] == "REFUNDED") {
-                //todo:Доделать возврат
-            }
-
-            if ($data['Status'] == "REJECTED") {
-                \Yii::info("Неуспешный платеж", static::class);
-
-                $shopBill->closed_at = time();
-                //$json
-                //$shopBill->external_data = $shopBill->external_data;
-
-                if (!$shopBill->save()) {
-                    throw new Exception("Не обновился счет: ".print_r($shopBill->errors, true));
-                }
-            }
-
-            if ($data['Status'] == "CONFIRMED") {
-                \Yii::info("Успешный платеж", static::class);
-
-                $transaction = \Yii::$app->db->beginTransaction();
-
-                try {
-
-                    $payment = new ShopPayment();
-                    $payment->shop_buyer_id = $shopBill->shop_buyer_id;
-                    $payment->shop_pay_system_id = $shopBill->shop_pay_system_id;
-                    $payment->shop_order_id = $shopBill->shop_order_id;
-                    $payment->amount = $shopBill->amount;
-                    $payment->currency_code = $shopBill->currency_code;
-                    $payment->comment = "Оплата по счету №{$shopBill->id} от ".\Yii::$app->formatter->asDate($shopBill->created_at);
-                    $payment->external_data = $data;
-
-                    if (!$payment->save()) {
-                        throw new Exception("Не сохранился платеж: ".print_r($payment->errors, true));
-                    }
-
-                    $shopBill->isNotifyUpdate = false;
-                    $shopBill->paid_at = time();
-                    $shopBill->shop_payment_id = $payment->id;
-
-                    if (!$shopBill->save()) {
-                        throw new Exception("Не обновился счет: ".print_r($shopBill->errors, true));
-                    }
-
-                    $shopBill->shopOrder->paid_at = time();
-                    $shopBill->shopOrder->save();
-
-
-                    $transaction->commit();
-                } catch (\Exception $e) {
-                    $transaction->rollBack();
-                    \Yii::error($e->getMessage(), static::class);
-                    return $e->getMessage();
-                }
-
-            }
-
-        } catch (\Exception $e) {
-            \Yii::error($e->getMessage(), static::class);
-            return $e->getMessage();
+        /**
+         * @var $bill ShopBill
+         */
+        if (!$code = \Yii::$app->request->get('code')) {
+            throw new Exception('Bill not found');
         }
 
-        $this->layout = false;
-        return "OK";
+        if (!$bill = ShopBill::find()->where(['code' => $code])->one()) {
+            throw new Exception('Bill not found');
+        }
+
+        return $this->redirect($bill->shopOrder->getPublicUrl(\Yii::$app->request->get()));
     }
 
 }
