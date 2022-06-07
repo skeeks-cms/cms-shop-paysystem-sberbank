@@ -3,7 +3,9 @@ return [
     'components' => [
         'shop' => [
             'paysystemHandlers' => [
-                \skeeks\cms\shop\sberbank\SberbankPaysystemHandler::class
+                'sberbank' => [
+                    'class' => \skeeks\cms\shop\sberbank\SberbankPaysystemHandler::class
+                ]
             ],
         ],
 
