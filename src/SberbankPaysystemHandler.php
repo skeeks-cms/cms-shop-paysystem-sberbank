@@ -140,7 +140,6 @@ class SberbankPaysystemHandler extends PaysystemHandler
          * Для чеков нужно указывать информацию о товарах
          * https://yookassa.ru/developers/api?lang=php#create_payment
          */
-        $shopBuyer = $shopOrder->shopBuyer;
 
 
         if (isset($bill->external_data['formUrl'])) {
@@ -157,8 +156,8 @@ class SberbankPaysystemHandler extends PaysystemHandler
             'failUrl'     => Url::toRoute(['/sberbank/sberbank/fail', 'code' => urlencode($bill->code)], true),
         ];
 
-        if ($bill->shopBuyer->email) {
-            $data['jsonParams'] = '{"email":"'.$bill->shopBuyer->email.'"}';
+        if ($bill->shopOrder && $bill->shopOrder->contact_email) {
+            $data['jsonParams'] = '{"email":"'.$bill->shopOrder->contact_email.'"}';
         }
 
         $response = $this->gateway('register.do', $data);
