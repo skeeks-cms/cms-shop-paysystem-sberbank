@@ -65,7 +65,7 @@ class SberbankController extends Controller
             try {
 
                 $payment = new ShopPayment();
-                $payment->shop_buyer_id = $bill->shop_buyer_id;
+                $payment->cms_user_id = $bill->cms_user_id;
                 $payment->shop_pay_system_id = $bill->shop_pay_system_id;
                 $payment->shop_order_id = $bill->shop_order_id;
                 $payment->amount = $bill->amount;
