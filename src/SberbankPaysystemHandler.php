@@ -33,7 +33,7 @@ class SberbankPaysystemHandler extends PaysystemHandler
 
     public $isLive = true; //https://auth.robokassa.ru/Merchant/Index.aspx
 
-    public $gatewayUrl = 'https://securepayments.sberbank.ru/payment/rest/';
+    public $gatewayUrl = 'https://securecardpayment.ru/payment/rest/';
     public $gatewayTestUrl = 'https://3dsec.sberbank.ru/payment/rest/';
     public $thanksUrl = '/main/spasibo-za-zakaz';
     public $failUrl = '/main/problema-s-oplatoy';
@@ -162,6 +162,7 @@ class SberbankPaysystemHandler extends PaysystemHandler
 
         $response = $this->gateway('register.do', $data);
 
+        /*print_r($response);die;*/
         if (isset($response['errorCode'])) { // В случае ошибки вывести ее
             return \Yii::$app->response->redirect(Url::toRoute(['/sberbank/sberbank/fail', 'code' => urlencode($bill->code), 'response' => Json::encode($response)], true));
         } else { // В случае успеха перенаправить пользователя на плетжную форму
